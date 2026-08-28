@@ -7,6 +7,7 @@ ACTIVE 영상편집템플릿 중 1개를 추천하고(`RECOMMEND`), 사장님이
 """
 
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +49,11 @@ class RecommendationNotFound(NotFoundError):
 class RecommendationsExhausted(ConflictError):
     error_code = "NO_MORE_SHORTFORM_RECOMMENDATIONS"
     message = "현재 조건에 맞는 추천을 모두 확인했습니다."
+
+
+class RecommendationMediaUnavailable(ConflictError):
+    error_code = "RECOMMENDATION_MEDIA_UNAVAILABLE"
+    message = "원본·가이드 영상이 확인된 숏폼만 추천할 수 있습니다. 다시 추천해주세요."
 
 
 # 화면에 한 번에 보여줄 추천 개수. AI는 호출 한 번에 1개만 준다(`docs/AI_연동_입출력.md`
@@ -129,36 +135,10 @@ def _serialize_recommendation(recommendation: Any) -> dict[str, Any]:
         "concept": recommendation.concept,
         "editing_template_id": recommendation.editing_template_id,
         "editing_template_version": recommendation.editing_template_version,
+        "reference_url": recommendation.reference_url,
+        "guide_video_url": recommendation.guide_video_url,
+        "source_platform": recommendation.source_platform,
     }
-
-
-def _collect_recommendations(
-    store: Store,
-    session_token: str,
-    menu: StoreMenu | None,
-    first: Any,
-    shown_before_first: list[str],
-    count: int = _RECOMMENDATION_BATCH_SIZE,
-) -> tuple[list[Any], list[str]]:
-    """`first`에 이어 "다시 추천 받기"를 필요한 개수만큼 반복 호출해 묶는다.
-
-    화면에 한 번에 여러 장을 보여주기 위한 백엔드 쪽 오케스트레이션이다 — AI 계약
-    자체는 안 바뀐다(호출 한 번에 1개).
-    """
-    recommendations = [first]
-    shown = [*shown_before_first, first.editing_template_id]
-    while len(recommendations) < count:
-        try:
-            next_recommendation = ai_client.get_next_shortform_recommendation(
-                store, session_token, menu, shown
-            )
-        except ai_client.AINoMoreRecommendations:
-            break
-        if next_recommendation.editing_template_id in shown:
-            break
-        recommendations.append(next_recommendation)
-        shown.append(next_recommendation.editing_template_id)
-    return recommendations, shown
 
 
 def has_more_recommendations(db: Session, session: ShortformSession) -> bool:
@@ -188,8 +168,7 @@ def submit_turn(
     연동 시 이 값을 AI 서버 요청에 그대로 실어 보내야 하므로, 여기서 흘려버리면
     연동 시점에 호출부(라우터→서비스)까지 다시 손봐야 한다.
 
-    `action`이 추천을 냈으면(`result.recommendation is not None`) 화면에 한 번에
-    보여줄 개수(`_RECOMMENDATION_BATCH_SIZE`)만큼 채워서 함께 돌려준다.
+    `action`이 추천을 냈으면 AI가 한 번의 응답으로 내려준 추천 3개를 그대로 돌려준다.
     """
     if session.status is not SessionStatus.ACTIVE:
         raise SessionNotActive
@@ -204,14 +183,14 @@ def submit_turn(
 
     session.project_state = result.project_state
     recommendations: list[Any] = []
-    if result.recommendation is not None:
-        recommendations, shown = _collect_recommendations(
-            store,
-            session.session_token,
-            menu,
-            result.recommendation,
-            session.shown_template_ids or [],
-        )
+    if result.recommendations:
+        recommendations = result.recommendations[:_RECOMMENDATION_BATCH_SIZE]
+        for recommendation in recommendations:
+            _resolve_video_format(db, _serialize_recommendation(recommendation))
+        shown = list(session.shown_template_ids or [])
+        for recommendation in recommendations:
+            if recommendation.editing_template_id not in shown:
+                shown.append(recommendation.editing_template_id)
         session.last_recommendation = [_serialize_recommendation(r) for r in recommendations]
         session.shown_template_ids = shown
     db.commit()
@@ -234,14 +213,18 @@ def get_next_recommendation(db: Session, session: ShortformSession) -> tuple[lis
     shown_before = session.shown_template_ids or []
 
     try:
-        first = ai_client.get_next_shortform_recommendation(
+        recommendations = ai_client.get_next_shortform_recommendations(
             store, session.session_token, menu, shown_before
         )
     except ai_client.AINoMoreRecommendations as exc:
         raise RecommendationsExhausted from exc
-    recommendations, shown = _collect_recommendations(
-        store, session.session_token, menu, first, shown_before
-    )
+    recommendations = recommendations[:_RECOMMENDATION_BATCH_SIZE]
+    for recommendation in recommendations:
+        _resolve_video_format(db, _serialize_recommendation(recommendation))
+    shown = list(shown_before)
+    for recommendation in recommendations:
+        if recommendation.editing_template_id not in shown:
+            shown.append(recommendation.editing_template_id)
 
     session.last_recommendation = [_serialize_recommendation(r) for r in recommendations]
     session.shown_template_ids = shown
@@ -283,22 +266,58 @@ def _resolve_video_format(db: Session, recommendation: dict[str, Any]) -> VideoF
             VideoFormat.editing_template_version == version,
         )
     )
+    if existing is None:
+        existing = db.scalar(
+            select(VideoFormat)
+            .where(VideoFormat.editing_template_id == template_id)
+            .order_by(VideoFormat.is_active.desc(), VideoFormat.id.desc())
+        )
+
+    reference_url = str(recommendation.get("reference_url") or "").strip()
+    guide_video_url = str(recommendation.get("guide_video_url") or "").strip()
     if existing is not None:
-        return existing
+        if not reference_url and _is_playable_youtube_url(existing.reference_url):
+            reference_url = existing.reference_url
+        if not guide_video_url and _is_playable_youtube_url(existing.guide_video_url):
+            guide_video_url = str(existing.guide_video_url)
+    guide_video_url = guide_video_url or reference_url
+    if not _is_playable_youtube_url(reference_url) or not _is_playable_youtube_url(guide_video_url):
+        raise RecommendationMediaUnavailable
+
+    url_owner = db.scalar(select(VideoFormat).where(VideoFormat.reference_url == reference_url))
+    if existing is None and url_owner is not None:
+        if url_owner.editing_template_id not in {None, template_id}:
+            raise RecommendationMediaUnavailable
+        existing = url_owner
+    elif url_owner is not None and url_owner.id != existing.id:
+        if url_owner.editing_template_id not in {None, template_id}:
+            raise RecommendationMediaUnavailable
+        url_owner.reference_url = f"internal://retired-recommendation-row/{url_owner.id}"
+        url_owner.guide_video_url = None
+        url_owner.is_active = False
 
     fallback_title = recommendation.get("title") or recommendation.get("project_title")
-    video_format = VideoFormat(
-        format_title=fallback_title or "추천 포맷",
-        # 원본 참고 URL이 없다 — 영상편집템플릿은 유튜브 링크가 아니라 AI 서버 내부
-        # 자산이라 5.1의 `reference_url`과 성격이 다르다. NOT NULL UNIQUE 제약을
-        # 만족시키면서 실제 외부 링크로 오인되지 않도록 `internal://` 스킴을 쓴다.
-        reference_url=f"internal://editing-template/{template_id}/v{version}",
-        editing_template_id=template_id,
-        editing_template_version=version,
-    )
-    db.add(video_format)
+    video_format = existing or VideoFormat()
+    video_format.format_title = fallback_title or "추천 포맷"
+    video_format.reference_url = reference_url
+    video_format.guide_video_url = guide_video_url
+    video_format.source_platform = "YOUTUBE"
+    video_format.editing_template_id = template_id
+    video_format.editing_template_version = version
+    video_format.is_active = True
+    if existing is None:
+        db.add(video_format)
     db.flush()
     return video_format
+
+
+def _is_playable_youtube_url(value: Any) -> bool:
+    parsed = urlparse(str(value or "").strip())
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme in {"http", "https"} and (
+        host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+        or host.endswith(".youtube.com")
+    )
 
 
 def _derive_promotion(subject: dict[str, Any] | None) -> tuple[PromotionPurpose, int | None]:

@@ -13,12 +13,34 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.video_format import VideoFormat
+from app.services import ai_client
 
 STORE_BODY: dict[str, Any] = {
     "name": "행복분식",
     "category": "분식",
     "address": "서울 강남구 테헤란로 1길 10",
 }
+
+
+def _ai_recommendation(template_id: str) -> dict[str, Any]:
+    return {
+        "recommendation_id": f"rec-{template_id}",
+        "project_title": f"project-{template_id}",
+        "title": f"title-{template_id}",
+        "concept": f"concept-{template_id}",
+        "editing_template_id": template_id,
+        "editing_template_version": 1,
+    }
+
+
+def test_ai_recommendation_batch_requires_three_distinct_templates() -> None:
+    assert ai_client._recommendations([]) == []
+    valid = [_ai_recommendation(f"template-{index}") for index in range(3)]
+    assert len(ai_client._recommendations(valid)) == 3
+
+    duplicate = [valid[0], valid[1], _ai_recommendation("template-1")]
+    with pytest.raises(ai_client.AIServiceUnavailable):
+        ai_client._recommendations(duplicate)
 
 
 @pytest.fixture(autouse=True)
@@ -118,8 +140,7 @@ def test_turn_moves_straight_to_recommend(
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["action"] == "RECOMMEND"
-    # 화면에 카드 3장을 한 번에 보여준다(2026-08-26) — AI는 호출 한 번에 1개만
-    # 주지만, 백엔드가 "다시 추천 받기"를 이어서 호출해 묶는다.
+    # AI가 한 번의 응답으로 내린 서로 다른 카드 3장을 그대로 보여준다.
     assert len(body["recommendations"]) == 3
     for recommendation in body["recommendations"]:
         assert set(recommendation) == {
@@ -130,14 +151,23 @@ def test_turn_moves_straight_to_recommend(
             "editing_template_id",
             "editing_template_version",
             "video_format_id",
+            "reference_url",
+            "guide_video_url",
+            "source_platform",
         }
     # 3장이 서로 다른 템플릿이어야 한다 — 같은 카드가 중복으로 뜨면 안 된다.
     template_ids = {r["editing_template_id"] for r in body["recommendations"]}
     assert len(template_ids) == 3
     assert body["project_state"]["ready_for_confirmation"] is True
-    # placeholder는 매번 새 editing_template_id를 만들어내므로, 아직 한 번도
-    # 채택된 적 없어 매칭되는 video_formats 행이 없다 — 지어내지 않고 null.
-    assert all(r["video_format_id"] is None for r in body["recommendations"])
+    # 추천을 화면에 내리기 전에 실제로 재생 가능한 영상 포맷이 연결돼야 한다.
+    assert all(r["video_format_id"] is not None for r in body["recommendations"])
+    assert all(
+        r["reference_url"].startswith("https://www.youtube.com/") for r in body["recommendations"]
+    )
+    assert all(
+        r["guide_video_url"].startswith("https://www.youtube.com/") for r in body["recommendations"]
+    )
+    assert all(r["source_platform"] == "YOUTUBE" for r in body["recommendations"])
 
 
 def test_find_video_format_id_returns_existing_match(db_session: Session) -> None:
@@ -279,6 +309,8 @@ def test_accept_creates_project_with_title_and_format(
     assert video_format is not None
     assert video_format.editing_template_id == chosen["editing_template_id"]
     assert video_format.editing_template_version == chosen["editing_template_version"]
+    assert video_format.reference_url == chosen["reference_url"]
+    assert video_format.guide_video_url == chosen["guide_video_url"]
 
 
 def test_accept_populates_scenes_and_tasks(

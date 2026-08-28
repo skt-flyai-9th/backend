@@ -49,6 +49,9 @@ class RecommendationResponse(BaseSchema):
     # 한다. 아직 한 번도 채택된 적 없는 템플릿이면 매칭되는 행이 없어 null이다
     # (지어내지 않는다 — 채택 시점에만 생기는 값이라 순수 조회로 그친다).
     video_format_id: int | None
+    reference_url: str
+    guide_video_url: str
+    source_platform: str
 
 
 class SessionCreateResponse(BaseSchema):

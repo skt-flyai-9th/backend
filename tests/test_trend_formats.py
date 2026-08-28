@@ -364,14 +364,22 @@ def test_sync_skips_challenge_without_video(
     assert list(db_session.scalars(select(VideoFormat))) == []
 
 
-def test_sync_adopts_existing_row_with_same_url(
+def test_sync_allows_two_challenges_to_share_reference_url(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`reference_url`이 UNIQUE라 새 행을 만들면 실패한다. 기존 행을 이어받는다."""
+    """서로 다른 챌린지가 같은 대표 영상을 의도적으로 공유할 수 있다(2026-08-28, AI팀 확인).
+
+    실서버에서 실제로 겪음: "가게 홍보 버전"·"챌린지 버전"처럼 서로 다른 챌린지
+    둘이 같은 예시 클립을 대표 영상으로 썼는데, 예전 코드는 `reference_url`로
+    챌린지를 식별해서 둘째 챌린지를 "이미 있는 챌린지"로 오인해 새 행을 안
+    만들거나(잘못된 병합), UNIQUE 제약에 걸려 동기화 전체가 실패했다. 이제는
+    `reference_url`이 같아도 `trend_challenge_id`가 다르면 완전히 별개 행이다.
+    """
     existing = VideoFormat(
         format_title="예전 이름",
         reference_url="https://www.youtube.com/shorts/OWnLiuJU8Ks",
         source_platform="YOUTUBE",
+        trend_challenge_id="unrelated_challenge",
         expected_duration_sec=25,
         shooting_difficulty="하",
     )
@@ -381,13 +389,77 @@ def test_sync_adopts_existing_row_with_same_url(
     _stub_ai(monkeypatch, TRENDCLUSTER)
     added, updated, skipped = sync_trend_formats(db_session)
 
-    assert (added, updated, skipped) == (2, 1, 0)
+    # TRENDCLUSTER의 cafe_recommendation_reels가 같은 URL을 쓰지만, 기존 행과는
+    # 별개의 새 챌린지라 병합되지 않고 3개 다 새로 추가된다.
+    assert (added, updated, skipped) == (3, 0, 0)
+
     db_session.refresh(existing)
-    assert existing.trend_challenge_id == "cafe_recommendation_reels"
-    assert existing.format_title == "카페 추천 리뷰 릴스"
-    # AI 분석 메타데이터가 기존 행에도 반영된다.
-    assert existing.expected_duration_sec == 13
-    assert existing.shooting_difficulty == "중"
+    assert existing.trend_challenge_id == "unrelated_challenge"
+    assert existing.format_title == "예전 이름"
+
+    new_row = db_session.scalar(
+        select(VideoFormat).where(VideoFormat.trend_challenge_id == "cafe_recommendation_reels")
+    )
+    assert new_row is not None
+    assert new_row.id != existing.id
+    assert (
+        new_row.reference_url
+        == existing.reference_url
+        == "https://www.youtube.com/shorts/OWnLiuJU8Ks"
+    )
+
+
+def test_sync_creates_two_new_rows_sharing_url_in_same_batch(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """실서버에서 실제로 겪은 장애를 그대로 재현한다(2026-08-28).
+
+    한 번의 AI 응답 안에 서로 다른 챌린지 둘("가게 홍보 버전"·"챌린지 버전")이
+    똑같은 대표 영상 URL을 쓰고 있었다. 이전 코드는 `reference_url` UNIQUE
+    제약 때문에 둘째 챌린지의 INSERT에서 IntegrityError가 나서 동기화 전체가
+    롤백됐다(정상적인 다른 챌린지 갱신까지 전부 취소됨). 이제는 두 챌린지 모두
+    독립된 행으로 만들어져야 한다.
+    """
+    shared_url = "https://www.youtube.com/shorts/6duJ3WOzeuQ"
+    payload = {
+        "results": [
+            {
+                "id": "donggeurio_store_promotion",
+                "rank": 5,
+                "name": "동그리오(매장 홍보)",
+                "representative_youtube_url": shared_url,
+                "guide_youtube_url": shared_url,
+                "editing_template_id": "gt_donggeurio_store_promotion",
+                "editing_template_version": 1,
+            },
+            {
+                "id": "donggeurio_challenge",
+                "rank": 6,
+                "name": "동그리오(챌린지)",
+                "representative_youtube_url": shared_url,
+                "guide_youtube_url": shared_url,
+                "editing_template_id": "gt_donggeurio_challenge",
+                "editing_template_version": 1,
+            },
+        ]
+    }
+    _stub_ai(monkeypatch, payload)
+
+    added, updated, skipped = sync_trend_formats(db_session)
+
+    assert (added, updated, skipped) == (2, 0, 0)
+    rows = list(
+        db_session.scalars(
+            select(VideoFormat).where(
+                VideoFormat.trend_challenge_id.in_(
+                    ["donggeurio_store_promotion", "donggeurio_challenge"]
+                )
+            )
+        )
+    )
+    assert len(rows) == 2
+    assert {row.reference_url for row in rows} == {shared_url}
+    assert all(row.is_active for row in rows)
 
 
 def test_sync_does_not_erase_curated_metadata_when_ai_omits_it(

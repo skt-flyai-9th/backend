@@ -16,6 +16,13 @@
 `internal://` 카드가 활성 상태로 노출된다(2026-08-26 실서버에서 둘 다 실제로 겪음).
 그래서 매 동기화마다 "이 챌린지를 대표할 행"을 하나만 골라 그 행에만 전체 정보(제목,
 실제 URL, 템플릿 연결, 활성화 여부)를 채우고, 경합하는 다른 행은 은퇴시킨다.
+
+**서로 다른 챌린지가 같은 대표 영상 URL을 공유할 수 있다**(2026-08-28, AI팀 확인 —
+의도된 동작. 예: "가게 홍보 버전"과 "챌린지 버전"이 같은 예시 클립을 씀). 그래서
+`reference_url`은 더 이상 챌린지 식별에 쓰지 않고(UNIQUE 제약도 뺐다), 챌린지
+정체성은 오직 `editing_template_id`+`version` 또는 `trend_challenge_id`로만
+판단한다 — 실서버에서 이 가정이 깨져 동기화 전체가 UNIQUE 제약 위반으로 실패하는
+사고를 겪은 뒤 정정했다.
 """
 
 from sqlalchemy import select, update
@@ -40,14 +47,19 @@ def _apply_ai_metadata(video_format: VideoFormat, challenge: ai_client.TrendChal
 
 
 def _select_representative_row(
-    db: Session, challenge: ai_client.TrendChallenge, reference_url: str
+    db: Session, challenge: ai_client.TrendChallenge
 ) -> VideoFormat | None:
     """이 챌린지를 대표할 기존 행을 찾는다. 우선순위대로 시도한다.
 
     1. 같은 (editing_template_id, version) — R06 추천이 먼저 적재해둔 행일 수 있다.
        템플릿 연결이 이미 돼 있는 행이 있으면 그걸 우선한다(정보를 더 많이 갖고 있다).
     2. 같은 trend_challenge_id — 이전 동기화가 만든 행.
-    3. 같은 reference_url — `reference_url`이 UNIQUE라 다른 경로로 이미 들어와 있을 수 있다.
+
+    **`reference_url`로는 찾지 않는다**(2026-08-28 결정) — AI팀 확인: 서로 다른
+    챌린지 둘이 같은 대표 영상을 의도적으로 공유할 수 있다(예: "가게 홍보 버전"과
+    "챌린지 버전"이 같은 예시 클립을 씀). `reference_url`이 같다고 "같은 챌린지"로
+    보면 둘 중 하나가 다른 하나로 잘못 병합된다 — 챌린지 정체성은 오직
+    `editing_template_id`+`version` 또는 `trend_challenge_id`로만 판단한다.
     """
     template_id = challenge.editing_template_id
     version = challenge.editing_template_version
@@ -61,45 +73,42 @@ def _select_representative_row(
         if by_template is not None:
             return by_template
 
-    by_challenge_id = db.scalar(
-        select(VideoFormat).where(VideoFormat.trend_challenge_id == challenge.id)
-    )
-    if by_challenge_id is not None:
-        return by_challenge_id
-
-    return db.scalar(select(VideoFormat).where(VideoFormat.reference_url == reference_url))
+    return db.scalar(select(VideoFormat).where(VideoFormat.trend_challenge_id == challenge.id))
 
 
 def _retire_conflicting_rows(
-    db: Session, keep: VideoFormat, challenge: ai_client.TrendChallenge, reference_url: str
+    db: Session, keep: VideoFormat, challenge: ai_client.TrendChallenge
 ) -> None:
-    """대표 행으로 안 뽑힌 다른 행이 같은 URL/challenge_id/템플릿을 들고 있으면 비운다.
+    """대표 행으로 안 뽑힌 다른 행이 같은 challenge_id/템플릿을 들고 있으면 비운다.
 
-    `reference_url`·`trend_challenge_id`엔 UNIQUE 제약이 없어도(또는 있어도), 대표
-    행에 실제 값을 쓰기 전에 경합하는 값을 먼저 비워야 나중에 값이 겹치지 않는다.
-    물리적으로 지우지 않고 비활성화 + 자기 자신을 가리키는 고유 주소로 바꿔
-    UNIQUE 제약을 피한다 — 즐겨찾기·프로젝트 참조가 걸려 있을 수 있어서다.
+    `trend_challenge_id`엔 UNIQUE 제약이 있어, 대표 행에 값을 쓰기 전에 경합하는
+    값을 먼저 비워야 나중에 값이 겹치지 않는다. 물리적으로 지우지 않고 비활성화 +
+    자기 자신을 가리키는 고유 주소로 바꿔 UNIQUE 제약을 피한다 — 즐겨찾기·프로젝트
+    참조가 걸려 있을 수 있어서다.
+
+    **`reference_url`은 더 이상 이 조건에 넣지 않는다**(2026-08-28) — 같은 영상을
+    공유하는 게 이제 정상이라, URL이 같다는 이유만으로 다른 챌린지 행을 은퇴시키면
+    안 된다. 은퇴 조건은 오직 "이 챌린지 자체의 옛 행"(같은 trend_challenge_id)과
+    "이 템플릿의 옛 버전 행"(같은 editing_template_id, 다른 버전)뿐이다.
 
     **같은 `editing_template_id`의 옛 버전 행도 여기서 잡는다.** R06 추천 수락이
     만든 행은 `trend_challenge_id`가 없어서(트렌드 동기화를 거친 적이 없어서)
-    위 두 조건만으로는 안 걸리는데, AI가 같은 챌린지의 템플릿 버전을 올리면
+    위 조건만으로는 안 걸리는데, AI가 같은 챌린지의 템플릿 버전을 올리면
     (v2→v4) 대표 행 선정은 새 버전 쪽(예: v4)으로 넘어가면서 옛 버전 행은
     그대로 활성 상태로 방치된다(2026-08-26 실서버에서 실제로 겪음 — v2 행이
     `internal://` 주소를 가진 채 v4 행과 나란히 활성 상태였다). `editing_template_id`
     자체는 지우지 않는다 — 이미 그 버전으로 만들어진 프로젝트가 있으면
     `get_shooting_guide`가 여전히 그 값을 참조하기 때문이다.
     """
-    conditions = [
-        (VideoFormat.reference_url == reference_url)
-        | (VideoFormat.trend_challenge_id == challenge.id)
-    ]
+    conditions = [VideoFormat.trend_challenge_id == challenge.id]
     if challenge.editing_template_id is not None:
         conditions = [
             conditions[0] | (VideoFormat.editing_template_id == challenge.editing_template_id)
         ]
+    conflicting_condition = conditions[0]
     if keep.id is not None:
-        conditions.append(VideoFormat.id != keep.id)
-    conflicting = db.scalars(select(VideoFormat).where(*conditions)).all()
+        conflicting_condition = conflicting_condition & (VideoFormat.id != keep.id)
+    conflicting = db.scalars(select(VideoFormat).where(conflicting_condition)).all()
     for row in conflicting:
         row.trend_challenge_id = None
         row.reference_url = f"internal://retired-trend-row/{row.id}"
@@ -131,16 +140,16 @@ def sync_trend_formats(db: Session) -> tuple[int, int, int]:
             skipped += 1
             continue
 
-        video_format = _select_representative_row(db, challenge, reference_url)
+        video_format = _select_representative_row(db, challenge)
         is_new = video_format is None
         if is_new:
             video_format = VideoFormat()
             db.add(video_format)
 
-        # 대표 행이 새로 만들어졌든 기존 행이든, 다른 행이 같은 URL/challenge_id/
+        # 대표 행이 새로 만들어졌든 기존 행이든, 다른 행이 같은 challenge_id/
         # 템플릿(다른 버전 포함)을 들고 있을 수 있다 — 새 행이라고 경합이 없다는
         # 보장은 없다(예: 옛 템플릿 버전 행이 대표로 뽑히지 않고 남아있는 경우).
-        _retire_conflicting_rows(db, video_format, challenge, reference_url)
+        _retire_conflicting_rows(db, video_format, challenge)
 
         video_format.format_title = challenge.name
         video_format.reference_url = reference_url

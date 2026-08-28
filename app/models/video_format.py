@@ -24,10 +24,12 @@ class VideoFormat(Base, TimestampMixin):
     format_type: Mapped[str | None] = mapped_column(
         String(20), nullable=True, index=True, comment="유형(밈/잔잔한 소개)"
     )
-    # 같은 원본을 두 번 담지 않기 위한 기준. AI가 목록을 다시 내려줘도 중복이 쌓이지 않는다.
+    # 서로 다른 챌린지가 같은 대표 영상을 공유할 수 있어(2026-08-28, AI팀 확인 —
+    # "가게 홍보 버전"·"챌린지 버전"이 같은 예시 클립을 쓰는 식) UNIQUE 제약을
+    # 걸지 않는다. 중복 방지는 `editing_template_id`+`version`/`trend_challenge_id`
+    # 쪽 UNIQUE 제약이 담당한다(`app/services/trend_format.py` 참고).
     reference_url: Mapped[str] = mapped_column(
         String(255),
-        unique=True,
         nullable=False,
         comment="원본 참고 URL(원본 파일은 저장하지 않고 링크만 보관)",
     )

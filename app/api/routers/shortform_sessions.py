@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, DbSession
+from app.models.video_format import VideoFormat
 from app.schemas.common import MessageResponse
 from app.schemas.shortform_session import (
     NextRecommendationResponse,
@@ -27,6 +28,12 @@ router = APIRouter(prefix="/shortform-sessions", tags=["shortform-sessions"])
 
 
 def _recommendation_response(db: Session, r: Any) -> RecommendationResponse:
+    format_id = session_service.find_video_format_id(
+        db, r.editing_template_id, r.editing_template_version
+    )
+    video_format = db.get(VideoFormat, format_id) if format_id is not None else None
+    if video_format is None:
+        raise session_service.RecommendationMediaUnavailable
     return RecommendationResponse(
         recommendation_id=r.recommendation_id,
         project_title=r.project_title,
@@ -34,9 +41,10 @@ def _recommendation_response(db: Session, r: Any) -> RecommendationResponse:
         concept=r.concept,
         editing_template_id=r.editing_template_id,
         editing_template_version=r.editing_template_version,
-        video_format_id=session_service.find_video_format_id(
-            db, r.editing_template_id, r.editing_template_version
-        ),
+        video_format_id=format_id,
+        reference_url=video_format.reference_url,
+        guide_video_url=video_format.guide_video_url or video_format.reference_url,
+        source_platform=video_format.source_platform or "YOUTUBE",
     )
 
 
