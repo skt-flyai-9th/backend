@@ -188,6 +188,51 @@ def test_find_video_format_id_returns_existing_match(db_session: Session) -> Non
     assert find_video_format_id(db_session, "gt_missing", 1) is None
 
 
+def test_resolve_video_format_allows_sharing_reference_url_with_other_template(
+    db_session: Session,
+) -> None:
+    """서로 다른 챌린지가 같은 대표 영상을 공유해도 거부·병합하지 않는다(2026-08-28).
+
+    실서버에서 실제로 겪음: `video_formats.reference_url` UNIQUE 제약을 뺀 뒤
+    (트렌드 동기화가 같은 이유로 이미 고쳐짐), "챌린지 버전"·"매장 홍보 버전"처럼
+    서로 다른 템플릿 둘이 같은 영상을 쓸 수 있게 됐는데, 이 함수는 여전히 "URL이
+    같은 다른 행이 있으면 충돌"로 보고 정상적인 추천을 `RECOMMENDATION_MEDIA_
+    UNAVAILABLE`로 거부하거나 그 행을 은퇴시키고 있었다.
+    """
+    from app.services.shortform_session import _resolve_video_format
+
+    shared_url = "https://www.youtube.com/shorts/6duJ3WOzeuQ"
+    other_template = VideoFormat(
+        format_title="동그리오(챌린지)",
+        reference_url=shared_url,
+        editing_template_id="gt_donggeurio_challenge",
+        editing_template_version=1,
+        is_active=True,
+    )
+    db_session.add(other_template)
+    db_session.commit()
+
+    resolved = _resolve_video_format(
+        db_session,
+        {
+            "editing_template_id": "gt_donggeurio_store_promotion",
+            "editing_template_version": 1,
+            "title": "동그리오(매장 홍보)",
+            "reference_url": shared_url,
+            "guide_video_url": shared_url,
+        },
+    )
+
+    assert resolved.id != other_template.id
+    assert resolved.reference_url == shared_url
+
+    db_session.refresh(other_template)
+    # 다른 템플릿 행이 은퇴되지 않고 그대로 활성 상태로 남아 있어야 한다.
+    assert other_template.is_active is True
+    assert other_template.reference_url == shared_url
+    assert other_template.editing_template_id == "gt_donggeurio_challenge"
+
+
 def test_turn_uses_representative_menu_as_subject(
     client: TestClient, auth_headers: dict[str, str], session_id: int, menu_id: int
 ) -> None:

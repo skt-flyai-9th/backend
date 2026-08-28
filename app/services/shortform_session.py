@@ -284,17 +284,14 @@ def _resolve_video_format(db: Session, recommendation: dict[str, Any]) -> VideoF
     if not _is_playable_youtube_url(reference_url) or not _is_playable_youtube_url(guide_video_url):
         raise RecommendationMediaUnavailable
 
-    url_owner = db.scalar(select(VideoFormat).where(VideoFormat.reference_url == reference_url))
-    if existing is None and url_owner is not None:
-        if url_owner.editing_template_id not in {None, template_id}:
-            raise RecommendationMediaUnavailable
-        existing = url_owner
-    elif url_owner is not None and url_owner.id != existing.id:
-        if url_owner.editing_template_id not in {None, template_id}:
-            raise RecommendationMediaUnavailable
-        url_owner.reference_url = f"internal://retired-recommendation-row/{url_owner.id}"
-        url_owner.guide_video_url = None
-        url_owner.is_active = False
+    # **`reference_url`이 다른 행과 같아도 충돌로 보지 않는다**(2026-08-28 정정).
+    # 서로 다른 챌린지가 같은 대표 영상을 의도적으로 공유할 수 있다고 AI팀이
+    # 확인했다(`app/services/trend_format.py`와 같은 결정, `video_formats.
+    # reference_url` UNIQUE 제약도 이미 제거함). 예전엔 여기서 URL이 같은 다른
+    # 행을 찾아 "충돌"로 보고 거부하거나 은퇴시켰는데, 그 전제가 틀렸다는 게
+    # 밝혀졌다 — 정상적인 추천(예: "동그리오" 매장 홍보 버전)이 이미 카탈로그에
+    # 있는 다른 템플릿(챌린지 버전)과 영상을 공유한다는 이유만으로 거부됐다.
+    # 챌린지 정체성은 오직 `editing_template_id`+`version`으로만 판단한다.
 
     fallback_title = recommendation.get("title") or recommendation.get("project_title")
     video_format = existing or VideoFormat()
