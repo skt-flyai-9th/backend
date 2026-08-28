@@ -108,11 +108,10 @@ def create_store(
     # 사장님이 등록 시 external_channel_url을 인스타그램 등 다른 링크로 바꾸면
     # (2026-08-26 실제 사례) URL 파싱만으로는 카카오 ID를 놓친다. 안 보내면
     # 기존처럼 external_channel_url에서 파싱을 시도한다(구버전 클라이언트 대응).
+    # 그래도 없으면(네이버로만 잡혔거나 프론트에서 값이 유실됐으면) `enrich_menu`가
+    # 이름+좌표로 한 번 더 찾아본다(2026-08-28 추가).
     place_id = payload.kakao_place_id or menu_crawl_service.kakao_place_id(store)
-    if place_id:
-        background_tasks.add_task(
-            menu_crawl_service.enrich_menu_from_kakao, store.id, place_id, SessionLocal
-        )
+    background_tasks.add_task(menu_crawl_service.enrich_menu, store.id, place_id, SessionLocal)
 
     background_tasks.add_task(insight_service.generate_trade_area_insight, store.id, SessionLocal)
 
