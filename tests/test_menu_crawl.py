@@ -18,7 +18,14 @@ from app.models.user import User
 from app.services import menu_crawl
 
 
-def _make_store(db_session: Session, external_channel_url: str | None) -> Store:
+def _make_store(
+    db_session: Session,
+    external_channel_url: str | None,
+    *,
+    name: str = "행복분식",
+    latitude: str | None = None,
+    longitude: str | None = None,
+) -> Store:
     user = User(
         email="owner@example.com",
         name="김사장",
@@ -29,7 +36,13 @@ def _make_store(db_session: Session, external_channel_url: str | None) -> Store:
     db_session.add(user)
     db_session.flush()
 
-    store = Store(user_id=user.id, name="행복분식", external_channel_url=external_channel_url)
+    store = Store(
+        user_id=user.id,
+        name=name,
+        external_channel_url=external_channel_url,
+        latitude=latitude,
+        longitude=longitude,
+    )
     db_session.add(store)
     db_session.commit()
     db_session.refresh(store)
@@ -207,3 +220,152 @@ def test_enrich_limits_item_count(db_session: Session, monkeypatch: pytest.Monke
     menu_crawl.enrich_menu_from_kakao(store.id, "10534102", _session_factory(db_session))
 
     assert db_session.query(StoreMenu).filter(StoreMenu.store_id == store.id).count() == 5
+
+
+# ---------------------------------------------------------------- find_place_id_by_location
+
+
+def _fake_keyword_response(documents: list[dict[str, Any]]) -> httpx.Response:
+    return httpx.Response(
+        200, json={"documents": documents}, request=httpx.Request("GET", "https://x")
+    )
+
+
+def test_find_place_id_by_location_returns_none_without_coordinates() -> None:
+    """좌표가 없으면 이름만으로 재검색하지 않는다(오매칭 위험, PM_DECISIONS.md 2026-08-21)."""
+    assert menu_crawl.find_place_id_by_location("행복분식", None, None) is None
+
+
+def test_find_place_id_by_location_matches_same_name_within_distance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    documents = [
+        {"id": "999", "place_name": "행복분식", "distance": "40"},
+    ]
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _fake_keyword_response(documents))
+
+    result = menu_crawl.find_place_id_by_location("행복분식", "37.5000000", "127.0000000")
+
+    assert result == "999"
+
+
+def test_find_place_id_by_location_rejects_far_away_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이름이 같아도 100m보다 멀면 다른 지점으로 보고 채택하지 않는다(동명 프랜차이즈)."""
+    documents = [
+        {"id": "999", "place_name": "행복분식", "distance": "500"},
+    ]
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _fake_keyword_response(documents))
+
+    assert menu_crawl.find_place_id_by_location("행복분식", "37.5000000", "127.0000000") is None
+
+
+def test_find_place_id_by_location_rejects_different_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """가까워도 상호명이 다르면(옆 가게) 채택하지 않는다."""
+    documents = [
+        {"id": "999", "place_name": "다른가게", "distance": "10"},
+    ]
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _fake_keyword_response(documents))
+
+    assert menu_crawl.find_place_id_by_location("행복분식", "37.5000000", "127.0000000") is None
+
+
+def test_find_place_id_by_location_silently_ignores_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(*args: object, **kwargs: object) -> httpx.Response:
+        return httpx.Response(500, request=httpx.Request("GET", "https://x"))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    assert menu_crawl.find_place_id_by_location("행복분식", "37.5000000", "127.0000000") is None
+
+
+# ---------------------------------------------------------------- enrich_menu
+
+
+def test_enrich_menu_uses_given_place_id_directly(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """place_id가 이미 있으면 위치 조회를 시도하지 않고 바로 크롤링한다."""
+    store = _make_store(db_session, None)
+    called_keyword_search = False
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        nonlocal called_keyword_search
+        if url == menu_crawl._PLACE_SEARCH_URL:
+            called_keyword_search = True
+            return _fake_keyword_response([])
+        return _fake_response([{"name": "브루드 커피", "price": 4500}])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    menu_crawl.enrich_menu(store.id, "10534102", _session_factory(db_session))
+
+    assert not called_keyword_search
+    menus = db_session.query(StoreMenu).filter(StoreMenu.store_id == store.id).all()
+    assert [m.name for m in menus] == ["브루드 커피"]
+
+
+def test_enrich_menu_falls_back_to_location_when_place_id_missing(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """네이버로 등록됐거나(kakao_place_id 유실) place_id가 없으면 이름+좌표로 찾아본다."""
+    store = _make_store(
+        db_session,
+        "http://www.starbucks.co.kr/",
+        name="스타벅스 더북한산점",
+        latitude="37.6554576",
+        longitude="126.9475563",
+    )
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        if url == menu_crawl._PLACE_SEARCH_URL:
+            return _fake_keyword_response(
+                [{"id": "76206032", "place_name": "스타벅스 더북한산점", "distance": "5"}]
+            )
+        assert url == "https://place-api.map.kakao.com/places/panel3/76206032"
+        return _fake_response([{"name": "브루드 커피", "price": 4500}])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    menu_crawl.enrich_menu(store.id, None, _session_factory(db_session))
+
+    menus = db_session.query(StoreMenu).filter(StoreMenu.store_id == store.id).all()
+    assert [m.name for m in menus] == ["브루드 커피"]
+
+
+def test_enrich_menu_does_nothing_when_resolution_fails(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _make_store(
+        db_session, None, name="스타벅스 더북한산점", latitude="37.6554576", longitude="126.9475563"
+    )
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _fake_keyword_response([]))
+
+    menu_crawl.enrich_menu(store.id, None, _session_factory(db_session))
+
+    assert db_session.query(StoreMenu).filter(StoreMenu.store_id == store.id).count() == 0
+
+
+def test_enrich_menu_does_nothing_without_place_id_or_coordinates(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """직접 입력 매장처럼 place_id도 좌표도 없으면 외부 호출 자체를 안 한다."""
+    store = _make_store(db_session, None)
+    called = False
+
+    def fake_get(*args: object, **kwargs: object) -> httpx.Response:
+        nonlocal called
+        called = True
+        return _fake_keyword_response([])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+
+    menu_crawl.enrich_menu(store.id, None, _session_factory(db_session))
+
+    assert not called
