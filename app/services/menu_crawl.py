@@ -24,10 +24,12 @@ crawl_kakao_menu.py`, 이제 삭제)을 카카오맵 웹사이트 자체가 화�
 
 import logging
 import re
+from decimal import Decimal
 
 import httpx
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.config import settings
 from app.models.store import Store
 from app.models.store_menu import StoreMenu
 
@@ -42,6 +44,13 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+# 이름+좌표 보조조회용(2026-08-28 추가). 카카오 키워드 검색 API — 2.1 검색이 쓰는
+# 것과 같은 엔드포인트다.
+_PLACE_SEARCH_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
+# 같은 매장으로 볼 좌표 오차 한도. 네이버·카카오가 지오코딩을 각자 하므로 완전히
+# 같은 좌표가 오진 않는다 — 건물 하나 폭 정도로 넉넉히 잡는다.
+_MATCH_DISTANCE_M = 100
+
 
 def kakao_place_id(store: Store) -> str | None:
     """가게의 `external_channel_url`이 카카오 플레이스 링크면 ID를 뽑는다.
@@ -54,6 +63,84 @@ def kakao_place_id(store: Store) -> str | None:
         return None
     match = _KAKAO_PLACE_RE.search(store.external_channel_url)
     return match.group(1) if match else None
+
+
+def _normalize_name(name: str) -> str:
+    return re.sub(r"\s+", "", name).lower()
+
+
+def find_place_id_by_location(
+    name: str, latitude: Decimal | None, longitude: Decimal | None
+) -> str | None:
+    """이름+좌표로, 정확히 같은 위치에 있는 카카오 매장을 찾는다.
+
+    **이름만으로 재검색하지 않는다**(`docs/PM_DECISIONS.md` 2026-08-21 결정과 같은
+    원칙 — 동명 프랜차이즈 오매칭 위험). 여기서는 이미 확정된 이 가게의 좌표를
+    같이 쓰므로 안전하다: 카카오 결과가 `_MATCH_DISTANCE_M` 이내에 없거나
+    상호명이 정확히 같지 않으면 채택하지 않는다.
+
+    네이버로 등록됐지만(2.1 검색·병합 단계에서 카카오 후보를 못 찾았거나, 병합은
+    됐는데 프론트에서 `kakao_place_id`가 유실된 경우) 좌표는 있는 매장을 구제하기
+    위한 보조 경로다.
+    """
+    if latitude is None or longitude is None:
+        return None
+
+    try:
+        response = httpx.get(
+            _PLACE_SEARCH_URL,
+            params={
+                "query": name,
+                "x": str(longitude),
+                "y": str(latitude),
+                "sort": "distance",
+                "size": 5,
+            },
+            headers={"Authorization": f"KakaoAK {settings.KAKAO_REST_API_KEY}"},
+            timeout=_REQUEST_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        documents = response.json().get("documents", [])
+    except (httpx.HTTPError, ValueError):
+        logger.info("카카오 위치 기반 매장 조회 실패: name=%s", name)
+        return None
+
+    target = _normalize_name(name)
+    for doc in documents:
+        distance = doc.get("distance")
+        if distance is None or int(distance) > _MATCH_DISTANCE_M:
+            continue
+        if _normalize_name(doc.get("place_name", "")) == target:
+            return doc.get("id")
+    return None
+
+
+def enrich_menu(store_id: int, place_id: str | None, session_factory: sessionmaker) -> None:
+    """백그라운드 진입점 (API명세서 2.2 후속 처리).
+
+    `place_id`가 이미 있으면(카카오로 등록됐거나, 프론트가 2.1 응답의 값을 그대로
+    보냈으면) 바로 크롤링한다. 없으면 가게의 이름+좌표로 `find_place_id_by_location`을
+    한 번 더 시도한다 — 네이버로만 잡혔거나, 병합은 됐는데 값이 유실된 경우를 구제한다.
+    """
+    resolved = place_id
+    if not resolved:
+        db = session_factory()
+        try:
+            store = db.get(Store, store_id)
+            if store is None:
+                return
+            resolved = find_place_id_by_location(store.name, store.latitude, store.longitude)
+        except Exception:
+            logger.exception(
+                "카카오 위치 기반 매장 조회 중 처리되지 않은 예외: store_id=%s", store_id
+            )
+            return
+
+        finally:
+            db.close()
+
+    if resolved:
+        enrich_menu_from_kakao(store_id, resolved, session_factory)
 
 
 def enrich_menu_from_kakao(store_id: int, place_id: str, session_factory: sessionmaker) -> None:
