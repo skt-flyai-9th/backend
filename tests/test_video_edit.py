@@ -74,7 +74,7 @@ def test_renderer_download_uses_internal_auth_and_persists_cover(
     assert captured["headers"] == {"X-Internal-API-Key": "shared-secret"}
 
 
-def test_build_footage_inputs_prefers_informational_element_id(
+def test_build_footage_inputs_falls_back_to_task_order_without_scene(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = ShortsProject(id=1, store_id=1)
@@ -86,7 +86,6 @@ def test_build_footage_inputs_prefers_informational_element_id(
         task_title="대표 메뉴",
         display_order=2,
         footage_url="footage/info.mp4",
-        guide={"shooting_element_id": "ELEMENT_02"},
     )
     db_session.add(task)
     db_session.commit()
@@ -96,8 +95,7 @@ def test_build_footage_inputs_prefers_informational_element_id(
     result = video_edit._build_footage_inputs(db_session, project)
 
     assert len(result) == 1
-    assert result[0].shooting_element_id == "ELEMENT_02"
-    assert result[0].shooting_scene_order is None
+    assert result[0].shooting_scene_order == 2
 
 
 @pytest.fixture

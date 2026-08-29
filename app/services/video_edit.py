@@ -80,8 +80,7 @@ def _map_status(ai_status: str) -> RenderStatus:
 def _build_footage_inputs(db: Session, project: ShortsProject) -> list[ai_client.FootageInput]:
     """촬영본 목록을 AI 요청 형식으로 만든다 (`docs/AI_연동_입출력.md` 16번 `videos[]`).
 
-    정보형은 태스크 guide에 보존된 `shooting_element_id`를 보내고 장면 순서는
-    생략한다. 밈·챌린지는 기존처럼 태스크가 연결된 장면 순서를 보낸다.
+    포맷과 관계없이 태스크가 연결된 장면 순서를 보낸다.
     """
     rows = db.execute(
         select(ShootingTask, StoryboardScene.scene_order)
@@ -95,16 +94,11 @@ def _build_footage_inputs(db: Session, project: ShortsProject) -> list[ai_client
     storage = get_storage()
     footages: list[ai_client.FootageInput] = []
     for task, scene_order in rows:
-        guide = task.guide or {}
-        shooting_element_id = guide.get("shooting_element_id")
         footages.append(
             ai_client.FootageInput(
                 video_id=f"task_{task.id}",
                 footage_url=to_public_url(storage, task.footage_url) or "",
-                shooting_scene_order=(
-                    None if shooting_element_id else (scene_order or task.display_order)
-                ),
-                shooting_element_id=(str(shooting_element_id) if shooting_element_id else None),
+                shooting_scene_order=scene_order or task.display_order,
             )
         )
     return footages

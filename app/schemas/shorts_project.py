@@ -311,9 +311,6 @@ class GuideType(StrEnum):
 class OverlayGuide(BaseSchema):
     # AI 연동 전까지 빈 배열이다 — 지어내면 가짜 안내가 진짜처럼 보인다
     instructions: list[str]
-    # 정보형 촬영 요소에만 있다(2026-08-28 추가). 9.2 업로드가 이 값 미달이면
-    # FOOTAGE_TOO_SHORT로 막으므로, 사장님이 미리 알 수 있게 여기서도 보여준다.
-    minimum_recording_sec: int | None = None
 
 
 class ReferenceVideo(BaseSchema):

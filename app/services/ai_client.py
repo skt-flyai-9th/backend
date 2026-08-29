@@ -206,9 +206,6 @@ class PlannedTask:
     task_title: str
     task_type: str | None = None
     scene_index: int | None = None
-    # 정보형 숏폼에서는 내부 편집 컷이 아니라 최대 5개의 촬영 요소를 사용자에게
-    # 보여준다. 요소 ID는 ShootingTask.guide JSON에 보존되어 편집 요청까지 전달된다.
-    shooting_element_id: str | None = None
     # 촬영 안내 (9.1). guide_type / instructions / broll_shot 를 담는다.
     guide: dict[str, Any] | None = None
 
@@ -397,43 +394,24 @@ def get_shooting_guide(
             )
         )
     tasks: list[PlannedTask] = []
-    shooting_elements = data.get("shooting_elements") or []
-    if data.get("format_type") == "정보형":
-        for index, item in enumerate(shooting_elements, start=1):
-            element_id = str(item["element_id"])
-            instruction = str(item["instruction"])
-            tasks.append(
-                PlannedTask(
-                    display_order=int(item.get("display_order") or index),
-                    task_title=str(item.get("title") or "촬영 요소"),
-                    task_type="영상촬영",
-                    scene_index=None,
-                    shooting_element_id=element_id,
-                    guide={
-                        "guide_type": "OVERLAY",
-                        "instructions": [instruction],
-                        "minimum_recording_sec": item.get("minimum_recording_sec"),
-                        "shooting_element_id": element_id,
-                    },
-                )
+    source_tasks = data.get("tasks") or []
+    for index, item in enumerate(source_tasks, start=1):
+        scene_index = item.get("scene_index")
+        if scene_index is None and item.get("shooting_scene_order") is not None:
+            # 1-인덱스 계약이다. 0 이하가 오면(AI 쪽 오류) -1 같은 음수가 나와
+            # 파이썬 음수 인덱싱으로 엉뚱한(마지막) 장면에 조용히 연결되므로
+            # 차라리 "모른다"로 둔다(2026-08-28, 코드리뷰로 발견).
+            raw_order = int(item["shooting_scene_order"])
+            scene_index = raw_order - 1 if raw_order >= 1 else None
+        tasks.append(
+            PlannedTask(
+                display_order=int(item.get("display_order") or index),
+                task_title=str(item.get("task_title") or item.get("title") or "촬영 태스크"),
+                task_type=item.get("task_type") or "영상촬영",
+                scene_index=int(scene_index) if scene_index is not None else None,
+                guide=_with_default_guide_type(item.get("guide")),
             )
-    else:
-        source_tasks = data.get("tasks") or []
-        for index, item in enumerate(source_tasks, start=1):
-            scene_index = item.get("scene_index")
-            if scene_index is None and item.get("shooting_scene_order") is not None:
-                scene_index = int(item["shooting_scene_order"]) - 1
-            tasks.append(
-                PlannedTask(
-                    display_order=int(item.get("display_order") or index),
-                    task_title=str(item.get("task_title") or item.get("title") or "촬영 태스크"),
-                    # AI가 못 주면 "영상촬영"으로 채운다 — 지금 AI가 만드는 태스크가 전부
-                    # 이 유형이라고 확인했다(2026-08-26, docs/PM_DECISIONS.md).
-                    task_type=item.get("task_type") or "영상촬영",
-                    scene_index=int(scene_index) if scene_index is not None else None,
-                    guide=_with_default_guide_type(item.get("guide")),
-                )
-            )
+        )
     if not tasks:
         tasks = [
             PlannedTask(
@@ -553,7 +531,6 @@ class FootageInput:
     video_id: str
     footage_url: str
     shooting_scene_order: int | None = None
-    shooting_element_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -677,7 +654,6 @@ def start_editing_run(
                     "video_id": footage.video_id,
                     "footage_url": footage.footage_url,
                     "shooting_scene_order": footage.shooting_scene_order,
-                    "shooting_element_id": footage.shooting_element_id,
                 }
                 for footage in footages
             ],
@@ -765,7 +741,6 @@ def request_revision(
                     "video_id": footage.video_id,
                     "footage_url": footage.footage_url,
                     "shooting_scene_order": footage.shooting_scene_order,
-                    "shooting_element_id": footage.shooting_element_id,
                 }
                 for footage in footages or []
             ],

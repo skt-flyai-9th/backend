@@ -9,7 +9,6 @@ from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.exceptions import BadRequestError
 from app.models.shooting_task import FootageType, ShootingTask, TaskStatus
 from app.models.shorts_project import ShortsProject
 from app.models.storyboard_scene import StoryboardScene
@@ -32,20 +31,6 @@ _VIDEO_EXTENSIONS = {
     "video/x-m4v": ".m4v",
     "video/webm": ".webm",
 }
-
-
-class FootageTooShort(BadRequestError):
-    """정보형 숏폼의 촬영 요소는 AI가 요구하는 최소 촬영 시간이 있다(`guide.minimum_recording_sec`).
-
-    빈 파일·용량 초과·형식 오류와 같은 층위의 하드 블록이다 — 짧은 촬영본을
-    그대로 편집(14.1)까지 넘기면 AI 쪽에서 뒤늦게 실패하므로, 업로드 시점에 막는다.
-
-    `footage_duration_sec`를 아예 안 보냈을 때도 이 예외를 던진다 — 최소 시간
-    요구가 있는데 실제 길이를 확인할 수 없으면, 통과시키는 것도 조건을 만족한다고
-    지어내는 것과 같기 때문이다.
-    """
-
-    error_code = "FOOTAGE_TOO_SHORT"
 
 
 def build_guide(db: Session, task: ShootingTask) -> TaskGuideResponse:
@@ -73,11 +58,6 @@ def build_guide(db: Session, task: ShootingTask) -> TaskGuideResponse:
         # AI 연동 전까지 비어 있다. 지어내면 가짜 안내가 진짜처럼 보인다.
         overlay = OverlayGuide(
             instructions=guide.get("instructions") or [],
-            # 정보형 촬영 요소에만 있다(2026-08-28 추가) — 밈·챌린지는 이 키 자체가
-            # guide에 없어 자연히 null이다. 9.2 업로드가 이 값으로 최소 촬영
-            # 시간을 검증하므로, 여기서 미리 보여줘야 사장님이 얼마나 찍어야
-            # 하는지 알고 촬영할 수 있다.
-            minimum_recording_sec=guide.get("minimum_recording_sec"),
         )
 
     broll_shot = None
@@ -137,17 +117,6 @@ def _reference_video(db: Session, task: ShootingTask, guide: dict) -> ReferenceV
     )
 
 
-def _validate_minimum_recording_sec(task: ShootingTask, footage_duration_sec: int | None) -> None:
-    minimum = (task.guide or {}).get("minimum_recording_sec")
-    if minimum is None:
-        return  # 요구사항이 없는 태스크(밈·챌린지 등)는 검증하지 않는다.
-    if footage_duration_sec is None or footage_duration_sec < minimum:
-        raise FootageTooShort(
-            f"촬영 시간이 너무 짧습니다. 최소 {minimum}초 이상 촬영해주세요.",
-            extra={"minimum_recording_sec": minimum},
-        )
-
-
 def upload_footage(
     db: Session,
     storage: Storage,
@@ -165,10 +134,6 @@ def upload_footage(
     업로드 성공이 `task_status`를 `DONE`으로 만드는 **유일한 정상 경로**다
     (2026-08-21 확정).
 
-    **최소 촬영 시간 미달이면 하드 블록한다**(2026-08-28 추가) — 정보형 촬영
-    요소는 AI가 `guide.minimum_recording_sec`로 최소 길이를 요구할 수 있다.
-    빈 파일·용량 초과와 같은 층위의 검증이라 저장 자체를 막는다.
-
     **썸네일도 함께 생성한다**(2026-08-28 추가, FE 리포트) — 앱을 껐다 켜면
     로컬 파일 경로를 몰라 첫 프레임을 못 그리는 문제였다. 태스크 보드(8.1)가
     지금까지 `footage_url` 자체도 안 내려주고 있었던 것도 같이 고쳤다
@@ -182,8 +147,6 @@ def upload_footage(
         limit_mb=settings.MAX_VIDEO_UPLOAD_SIZE_MB,
         unsupported_message="지원하지 않는 파일 형식입니다. 영상 파일만 업로드할 수 있습니다.",
     )
-    _validate_minimum_recording_sec(task, footage_duration_sec)
-
     previous_key = task.footage_url
     previous_thumbnail_key = task.thumbnail_url
     identifier = uuid.uuid4().hex

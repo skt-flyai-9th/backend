@@ -111,6 +111,44 @@ def test_shooting_guide_maps_scene_and_task(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured["query_params"]["promotion_subject"] == "떡볶이"
 
 
+def test_shooting_guide_treats_zero_scene_order_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`shooting_scene_order`는 1-인덱스 계약이다. 0(또는 그 이하)이 오면 `-1` 같은
+
+    음수로 변환돼 파이썬 음수 인덱싱 때문에 마지막 장면에 조용히 잘못 연결될 수
+    있어(2026-08-28, 코드리뷰로 발견), 대신 "모른다"(`None`)로 떨어뜨린다.
+    """
+    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
+    monkeypatch.setattr(
+        ai_client,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "estimated_shooting_sec": 480,
+            "difficulty": "하",
+            "scenes": [{"scene_order": 1, "scene_description": "완성 메뉴"}],
+            "tasks": [
+                {"display_order": 1, "task_title": "완성 메뉴 촬영", "shooting_scene_order": 0}
+            ],
+        },
+    )
+    video_format = VideoFormat(
+        editing_template_id="edit_template_014",
+        editing_template_version=1,
+        format_title="메뉴 소개",
+        reference_url="internal://template",
+    )
+
+    guide = ai_client.get_shooting_guide(
+        video_format,
+        Store(id=10, user_id=1, name="행복분식", category="분식"),
+        ShortsProject(id=30, store_id=10, promotion_purpose=PromotionPurpose.MENU),
+        menu_name="떡볶이",
+    )
+
+    assert guide.tasks[0].scene_index is None
+
+
 def test_editing_status_maps_queue_and_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
     monkeypatch.setattr(
@@ -275,10 +313,10 @@ def test_shooting_guide_keeps_task_type_and_guide_type_when_present(
     assert task.guide["guide_type"] == "DANCE"
 
 
-def test_informational_shooting_guide_uses_capture_elements(
+def test_informational_shooting_guide_uses_scene_linked_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """정보형은 내부 편집 장면 수와 무관하게 최대 5개 촬영 요소로 태스크를 만든다."""
+    """정보형도 AI가 반환한 컷별 장면과 태스크를 그대로 사용한다."""
     monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
     monkeypatch.setattr(
         ai_client,
@@ -286,25 +324,18 @@ def test_informational_shooting_guide_uses_capture_elements(
         lambda *args, **kwargs: {
             "format_type": "정보형",
             "scenes": [
-                {"scene_order": index, "scene_description": f"내부 컷 {index}"}
-                for index in range(1, 11)
+                {
+                    "scene_order": 1,
+                    "scene_description": "제조 과정",
+                },
+                {
+                    "scene_order": 2,
+                    "scene_description": "대표 메뉴",
+                },
             ],
-            "tasks": [],
-            "shooting_elements": [
-                {
-                    "element_id": "ELEMENT_01",
-                    "display_order": 1,
-                    "title": "제조 과정",
-                    "instruction": "손동작이 보이게 길게 촬영하세요.",
-                    "minimum_recording_sec": 15,
-                },
-                {
-                    "element_id": "ELEMENT_02",
-                    "display_order": 2,
-                    "title": "대표 메뉴",
-                    "instruction": "메뉴를 여러 각도로 촬영하세요.",
-                    "minimum_recording_sec": 20,
-                },
+            "tasks": [
+                {"display_order": 1, "task_title": "제조 과정", "scene_index": 0},
+                {"display_order": 2, "task_title": "대표 메뉴", "scene_index": 1},
             ],
         },
     )
@@ -321,16 +352,9 @@ def test_informational_shooting_guide_uses_capture_elements(
         ShortsProject(id=30, store_id=10),
     )
 
-    assert len(guide.scenes) == 10
+    assert len(guide.scenes) == 2
     assert [task.task_title for task in guide.tasks] == ["제조 과정", "대표 메뉴"]
-    assert [task.shooting_element_id for task in guide.tasks] == ["ELEMENT_01", "ELEMENT_02"]
-    assert all(task.scene_index is None for task in guide.tasks)
-    assert guide.tasks[0].guide == {
-        "guide_type": "OVERLAY",
-        "instructions": ["손동작이 보이게 길게 촬영하세요."],
-        "minimum_recording_sec": 15,
-        "shooting_element_id": "ELEMENT_01",
-    }
+    assert [task.scene_index for task in guide.tasks] == [0, 1]
 
 
 def test_editing_run_uses_template_and_video_contract(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,43 +394,6 @@ def test_editing_run_uses_template_and_video_contract(monkeypatch: pytest.Monkey
     # 한국어 얼굴노출모드가 AI 쪽 영문 토큰으로 변환되어야 한다(원문 그대로 보내면 안 됨).
     assert body["project"]["face_exposure"] == "allowed"
     assert body["videos"][0]["shooting_scene_order"] == 1
-
-
-def test_editing_run_sends_informational_shooting_element(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        captured.update(method=method, path=path, **kwargs)
-        return {"run_id": "edit_info", "status": "QUEUED"}
-
-    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
-    monkeypatch.setattr(ai_client, "_request_json", fake_request)
-    project = ShortsProject(id=30, store_id=10, recommendation_id="rec_info")
-    video_format = VideoFormat(
-        editing_template_id="edit_template_info",
-        editing_template_version=4,
-        format_title="카페 정보형",
-        reference_url="internal://template",
-    )
-
-    ai_client.start_editing_run(
-        Store(id=10, user_id=1, name="행복분식"),
-        project,
-        video_format,
-        [
-            ai_client.FootageInput(
-                "task_1",
-                "https://signed.example/info.mp4",
-                shooting_element_id="ELEMENT_01",
-            )
-        ],
-    )
-
-    video = captured["json_body"]["videos"][0]
-    assert video["shooting_element_id"] == "ELEMENT_01"
-    assert video["shooting_scene_order"] is None
 
 
 def test_face_exposure_unknown_value_falls_back_to_not_allowed() -> None:
