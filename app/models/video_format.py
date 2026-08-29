@@ -36,8 +36,19 @@ class VideoFormat(Base, TimestampMixin):
     source_platform: Mapped[str | None] = mapped_column(
         String(50), nullable=True, comment="원본 플랫폼(임베드 방식 분기에 사용)"
     )
+    # API 응답에는 `reference_duration_sec`으로 나간다(2026-08-30 개명) — 완성
+    # 영상 길이인데 프로젝트 레벨의 `shooting_summary.expected_duration_sec`
+    # (예상 촬영 소요시간, 완전히 다른 값)과 이름이 같아서 FE가 혼동했다.
     expected_duration_sec: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, comment="예상 촬영/영상 시간(초)"
+        Integer,
+        nullable=True,
+        comment="완성 영상 길이(초). API 응답 필드명은 reference_duration_sec",
+    )
+    # 템플릿 고정값(2026-08-30 실측 확인 — 가게·메뉴를 완전히 다르게 넣어도
+    # AI 응답이 동일했다). 그래서 프로젝트 생성 없이도 트렌드 동기화 시점에
+    # 미리 조회해서 캐싱해둘 수 있다(`app/services/trend_format.py`).
+    estimated_shooting_sec: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="예상 촬영 소요시간(초). 템플릿 고정값, AI 조회 캐시"
     )
     shooting_difficulty: Mapped[str | None] = mapped_column(
         String(20), nullable=True, comment="촬영 난이도"

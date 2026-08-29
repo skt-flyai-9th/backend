@@ -434,6 +434,49 @@ def get_shooting_guide(
     )
 
 
+def get_template_shooting_sec(
+    editing_template_id: str, editing_template_version: int
+) -> int | None:
+    """영상편집템플릿의 예상 촬영 소요시간(초)을 가게 무관하게 조회한다.
+
+    `get_shooting_guide`가 받는 `store`/`project` 컨텍스트는 응답을 바꾸지 않는다
+    (2026-08-30 실측 확인 — 가게명·메뉴명을 완전히 다르게 넣어도 `estimated_
+    shooting_sec`이 동일했다). 그래서 실제 가게·프로젝트 없이 플레이스홀더 값만
+    넣어 호출해도 안전하고, 트렌드 동기화 시점(`app/services/trend_format.py`)에
+    카탈로그에 캐싱해둘 수 있다 — 5.1 목록 화면을 위해 프로젝트를 미리 만들
+    필요가 없다.
+
+    카탈로그의 부가 정보일 뿐이라 실패해도 동기화 전체를 막지 않는다 — 조용히
+    `None`을 돌려준다.
+    """
+    if not is_enabled():
+        return None
+    try:
+        data = _request_json(
+            "GET",
+            f"/api/v1/editing-templates/{editing_template_id}"
+            f"/versions/{editing_template_version}/shooting-guide",
+            query_params={
+                "store_name": "포맷카탈로그",
+                "business_type": "기타",
+                "promotion_subject": "미리보기",
+                "promotion_objective": "",
+                "face_exposure": "not_allowed",
+            },
+        )
+    except AppError:
+        # 부가 정보일 뿐이다 — 401(키 설정 오류)이든 404(존재하지 않는 템플릿)든
+        # 동기화 전체를 막을 이유가 없다.
+        logger.info(
+            "촬영 소요시간 캐싱 실패(무시): template_id=%s version=%s",
+            editing_template_id,
+            editing_template_version,
+        )
+        return None
+    value = data.get("estimated_shooting_sec")
+    return int(value) if value is not None else None
+
+
 def _placeholder_shooting_guide(video_format: VideoFormat) -> ShootingGuide:
     """AI 연동 전 임시 촬영 가이드.
 

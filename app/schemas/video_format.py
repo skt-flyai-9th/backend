@@ -31,7 +31,17 @@ class VideoFormatSummary(BaseSchema):
     id: int
     format_title: str
     format_type: str | None
-    expected_duration_sec: int | None
+    # 2026-08-30 개명(🔴 Breaking, 구 expected_duration_sec) — 완성 영상 길이다.
+    # `shooting_summary.expected_duration_sec`(예상 촬영 소요시간, 7.1 응답)과
+    # 이름이 같아 FE가 혼동해서 홈 카드에 엉뚱한 값을 "#촬영"으로 잘못 표시했다.
+    # DB 컬럼명은 그대로 두고(다른 곳에서 "완성 영상 길이"로 이미 널리 쓰임)
+    # 이 응답 필드에서만 별칭을 준다.
+    reference_duration_sec: int | None = Field(validation_alias="expected_duration_sec")
+    # 2026-08-30 추가 — 예상 촬영 소요시간(초). 템플릿에 고정된 값이라(실측 확인,
+    # 가게·메뉴를 바꿔도 응답이 동일했다) 프로젝트를 만들지 않고도 카탈로그 동기화
+    # 시점에 캐싱해서 바로 내려준다(`app/services/trend_format.py`). 트렌드 동기화
+    # 전이거나 AI가 값을 안 준 포맷은 null이다 — 지어내지 않는다.
+    estimated_shooting_sec: int | None
     shooting_difficulty: str | None
     requires_face: bool | None
     reference_url: str
@@ -56,7 +66,10 @@ class VideoFormatDetailResponse(BaseSchema):
     reference_url: str
     guide_video_url: str | None = None
     source_platform: str | None
-    expected_duration_sec: int | None
+    # 2026-08-30 개명(🔴 Breaking) — VideoFormatSummary와 같은 이유.
+    reference_duration_sec: int | None = Field(validation_alias="expected_duration_sec")
+    # 2026-08-30 추가 — VideoFormatSummary와 같은 값·같은 이유.
+    estimated_shooting_sec: int | None
     shooting_difficulty: str | None
     requires_face: bool | None
     is_favorite: bool = False
