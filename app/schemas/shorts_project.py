@@ -194,9 +194,13 @@ class PlanCreateRequest(BaseSchema):
 class ShootingSummary(BaseSchema):
     """촬영 준비 요약 (기능명세서 S07.5.1, `#/project/:id/prep` 화면).
 
-    ⚠️ `expected_duration_sec`은 **예상 촬영 소요시간**이다. 5.1·5.2의 같은 이름
-    필드(**완성 영상 길이**)와 뜻이 다르다. DB에는 `estimated_shooting_sec`으로
-    구분해 저장하며 여기서만 명세서 필드명에 맞춘다.
+    ⚠️ `expected_duration_sec`은 **예상 촬영 소요시간**이다. DB에는
+    `estimated_shooting_sec`으로 구분해 저장하며 여기서만 명세서 필드명에
+    맞춘다. 5.1·5.2는 예전엔 같은 이름(뜻은 **완성 영상 길이**로 달랐다)을
+    썼는데, FE가 혼동해 사고가 난 뒤 2026-08-30에 `reference_duration_sec`으로
+    개명했다 — 지금은 이름이 다르다. 대신 5.1·5.2에도 이 값과 완전히 같은
+    `estimated_shooting_sec`이 추가돼(가게 무관 템플릿 고정값), 프로젝트 생성
+    전에도 미리 보여줄 수 있다.
     """
 
     expected_duration_sec: int | None
