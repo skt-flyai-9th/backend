@@ -76,18 +76,16 @@ def generate_plan(db: Session, project: ShortsProject, video_format_id: int) -> 
             shorts_project_id=project.id,
             scene_id=(
                 scenes[task.scene_index].id
-                if task.scene_index is not None and task.scene_index < len(scenes)
+                # 하한도 확인한다 — 음수면 파이썬이 마지막 장면으로 조용히
+                # 해석해버린다(2026-08-28, 코드리뷰로 발견).
+                if task.scene_index is not None and 0 <= task.scene_index < len(scenes)
                 else None
             ),
             task_type=task.task_type,
             task_title=task.task_title,
             task_status=TaskStatus.NOT_STARTED,
             display_order=task.display_order,
-            guide=(
-                {**(task.guide or {}), "shooting_element_id": task.shooting_element_id}
-                if task.shooting_element_id is not None
-                else task.guide
-            ),
+            guide=task.guide,
         )
         for task in guide.tasks
     )
