@@ -164,6 +164,15 @@ def sync_trend_formats(db: Session) -> tuple[int, int, int]:
         ):
             video_format.editing_template_id = challenge.editing_template_id
             video_format.editing_template_version = challenge.editing_template_version
+            # 5.1 목록에 촬영 소요시간을 얹기 위한 캐싱(2026-08-30, FE 요청) —
+            # 가게 컨텍스트와 무관한 템플릿 고정값이라 프로젝트 없이도 지금
+            # 조회해둘 수 있다. 실패하면 None이 오는데, `_apply_ai_metadata`와
+            # 같은 원칙으로 이전 동기화가 이미 채워둔 값을 지우지 않는다.
+            shooting_sec = ai_client.get_template_shooting_sec(
+                challenge.editing_template_id, challenge.editing_template_version
+            )
+            if shooting_sec is not None:
+                video_format.estimated_shooting_sec = shooting_sec
         # 트렌드 인기 여부(challenge.active)가 아니라 "촬영가이드 템플릿이 실제로
         # 있는가"로 활성화 여부를 정한다(2026-08-26 정정) — 발굴은 됐지만 아직
         # 승인 전인 챌린지는 트렌드로는 active여도 고르면 기획 생성이 막힌다.

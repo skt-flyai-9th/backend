@@ -116,7 +116,10 @@ def build_summary(project: ShortsProject) -> ShootingSummary | None:
     """촬영 준비 요약. 7.1을 호출한 적 없으면 None이다.
 
     DB 컬럼명(`estimated_shooting_sec`)과 API 필드명(`expected_duration_sec`)이
-    다른 유일한 지점이다 — 5.1의 동명 필드(완성 영상 길이)와 뜻이 달라 구분했다.
+    다르다 — 예전엔 5.1의 동명 필드(완성 영상 길이)와 뜻이 달라 구분했는데,
+    2026-08-30에 그 필드가 `reference_duration_sec`으로 개명되면서 이제 이름이
+    안 겹친다. 그래도 API 필드명은 그대로 둔다 — 이미 나가고 있는 계약이라
+    바꿀 이유가 없다.
     """
     if project.video_format_id is None:
         return None

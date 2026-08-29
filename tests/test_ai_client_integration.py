@@ -149,6 +149,49 @@ def test_shooting_guide_treats_zero_scene_order_as_unknown(
     assert guide.tasks[0].scene_index is None
 
 
+# ---------------------------------------------------------------- get_template_shooting_sec
+
+
+def test_get_template_shooting_sec_returns_ai_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+        captured.update(method=method, url=url, **kwargs)
+        return httpx.Response(
+            200,
+            json={"estimated_shooting_sec": 60},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
+    monkeypatch.setattr(settings, "AI_SERVER_API_KEY", "shared-secret")
+    monkeypatch.setattr(httpx, "request", fake_request)
+
+    result = ai_client.get_template_shooting_sec("gt_cafe_recommendation", 4)
+
+    assert result == 60
+    assert "gt_cafe_recommendation/versions/4/shooting-guide" in captured["url"]
+
+
+def test_get_template_shooting_sec_returns_none_when_ai_disabled() -> None:
+    assert ai_client.get_template_shooting_sec("gt_x", 1) is None
+
+
+def test_get_template_shooting_sec_returns_none_on_ai_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카탈로그 부가 정보일 뿐이라 실패해도 예외를 밖으로 새지 않는다."""
+
+    def fake_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(500, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
+    monkeypatch.setattr(settings, "AI_SERVER_API_KEY", "shared-secret")
+    monkeypatch.setattr(httpx, "request", fake_request)
+
+    assert ai_client.get_template_shooting_sec("gt_x", 1) is None
+
+
 def test_editing_status_maps_queue_and_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
     monkeypatch.setattr(

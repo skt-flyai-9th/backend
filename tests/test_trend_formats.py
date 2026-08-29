@@ -125,6 +125,92 @@ def test_sync_links_editing_template_when_approved(
     assert linked.is_active is True
 
 
+def test_sync_caches_estimated_shooting_sec_for_linked_template(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """템플릿이 연결되면 촬영 소요시간도 같이 캐싱한다(2026-08-30, FE 요청).
+
+    가게 컨텍스트 없이(트렌드 동기화 시점에) 조회하는 값이라, 챌린지 목록
+    엔드포인트와 촬영가이드 엔드포인트가 서로 다른 응답을 주는 걸 구분해서
+    반영하는지가 핵심이다.
+    """
+    payload = {
+        "results": [
+            {
+                **TRENDCLUSTER["results"][0],
+                "editing_template_id": "gt_jujutsu_transition",
+                "editing_template_version": 4,
+            }
+        ]
+    }
+
+    def fake_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+        del kwargs
+        if "shooting-guide" in url:
+            return httpx.Response(
+                200, json={"estimated_shooting_sec": 60}, request=httpx.Request(method, url)
+            )
+        return httpx.Response(200, json=payload, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
+    monkeypatch.setattr(settings, "AI_SERVER_API_KEY", "shared-secret")
+    monkeypatch.setattr(httpx, "request", fake_request)
+
+    sync_trend_formats(db_session)
+
+    linked = db_session.scalar(
+        select(VideoFormat).where(VideoFormat.trend_challenge_id == "jujutsu_transition")
+    )
+    assert linked is not None
+    assert linked.estimated_shooting_sec == 60
+
+
+def test_sync_keeps_previous_estimated_shooting_sec_when_ai_lookup_fails(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """촬영가이드 조회가 실패해도 이전 동기화가 채워둔 값을 지우지 않는다.
+
+    `_apply_ai_metadata`가 다른 필드에 적용하는 "null로 덮어쓰지 않는다" 원칙과
+    같다 — 카탈로그 부가 정보라 AI가 일시적으로 응답을 못 줘도 화면이 갑자기
+    빈 값을 보여주면 안 된다.
+    """
+    payload = {
+        "results": [
+            {
+                **TRENDCLUSTER["results"][0],
+                "editing_template_id": "gt_jujutsu_transition",
+                "editing_template_version": 4,
+            }
+        ]
+    }
+
+    def fake_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+        del kwargs
+        if "shooting-guide" in url:
+            return httpx.Response(500, request=httpx.Request(method, url))
+        return httpx.Response(200, json=payload, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
+    monkeypatch.setattr(settings, "AI_SERVER_API_KEY", "shared-secret")
+    monkeypatch.setattr(httpx, "request", fake_request)
+
+    existing = VideoFormat(
+        format_title="주술회전 트랜지션",
+        reference_url="https://www.youtube.com/shorts/Yc7ZjC0n7oY?si=abc",
+        trend_challenge_id="jujutsu_transition",
+        editing_template_id="gt_jujutsu_transition",
+        editing_template_version=4,
+        estimated_shooting_sec=45,
+    )
+    db_session.add(existing)
+    db_session.commit()
+
+    sync_trend_formats(db_session)
+
+    db_session.refresh(existing)
+    assert existing.estimated_shooting_sec == 45
+
+
 def test_sync_merges_into_existing_template_row_with_real_url(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
