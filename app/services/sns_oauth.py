@@ -8,6 +8,7 @@
 Clip·TikTok도 되지만, 그 둘은 성과 지표를 가져올 API 경로가 없어 연동 대상이 아니다.
 """
 
+import logging
 from dataclasses import dataclass
 from http import HTTPStatus
 from urllib.parse import quote, urlencode
@@ -18,6 +19,8 @@ from app.core.config import settings
 from app.core.exceptions import AppError, BadRequestError
 from app.models.sns import SnsConnection
 
+logger = logging.getLogger(__name__)
+
 # 콜백 경로. 플랫폼 개발자 콘솔에 등록한 리디렉션 URI와 **정확히** 같아야 한다 —
 # 한 글자만 달라도 플랫폼이 리다이렉트를 거부한다.
 CALLBACK_PATH = "/sns-connections/callback"
@@ -27,6 +30,11 @@ CALLBACK_PATH = "/sns-connections/callback"
 # 바꿔야 한다(2026-08-27, R17 성과 수집기 설계 중 발견).
 _IG_EXCHANGE_URL = "https://graph.instagram.com/access_token"
 _IG_REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
+# 마이페이지에 "연동됨" 대신 실제 계정명을 보여주기 위한 조회용(2026-08-30,
+# FE 요청). 토큰 교환 응답 자체엔 사람이 읽을 이름이 안 실려 온다 —
+# Instagram은 숫자 user_id뿐이고 YouTube는 아예 없다.
+_IG_PROFILE_URL = "https://graph.instagram.com/me"
+_YT_CHANNEL_URL = "https://www.googleapis.com/youtube/v3/channels"
 
 
 class UnsupportedPlatform(BadRequestError):
@@ -169,16 +177,55 @@ def exchange_code(platform: PlatformOAuth, code: str) -> OAuthTokens:
         access_token, expires_in = _exchange_long_lived_instagram_token(
             platform.client_secret, access_token
         )
+        account_name = _fetch_instagram_username(access_token)
+    else:
+        account_name = _fetch_youtube_channel_title(access_token)
 
     return OAuthTokens(
         access_token=access_token,
         refresh_token=body.get("refresh_token"),
         expires_in=expires_in,
-        # 계정 이름은 플랫폼마다 다른 곳에 있고, 없으면 별도 호출이 필요하다.
-        # 지금은 토큰 응답에 실려 오는 경우만 취하고 없으면 비워둔다 —
-        # 목록(16.1)에서 구분용으로 쓰는 값이라 없어도 동작에 지장이 없다.
-        account_name=body.get("username") or body.get("user_id"),
+        # 마이페이지가 "연동됨" 대신 실제 계정명("yeoljeong_coffee", "열정커피TV")을
+        # 보여주는 데 쓴다(2026-08-30, FE 요청). 토큰 응답 자체엔 없어서 별도
+        # 조회가 필요한데, 실패해도 연동 자체는 성공시킨다 — 이건 화면 표시용
+        # 부가 정보라 없어도 동작에 지장이 없다(16.1에서 null로 내려가면
+        # 프론트가 "연동됨"으로 대체 표시).
+        account_name=account_name,
     )
+
+
+def _fetch_instagram_username(access_token: str) -> str | None:
+    try:
+        response = httpx.get(
+            _IG_PROFILE_URL,
+            params={"fields": "username", "access_token": access_token},
+            timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        username = response.json().get("username")
+        return str(username) if username else None
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Instagram 계정명 조회 실패(무시): %s", type(exc).__name__)
+        return None
+
+
+def _fetch_youtube_channel_title(access_token: str) -> str | None:
+    try:
+        response = httpx.get(
+            _YT_CHANNEL_URL,
+            params={"part": "snippet", "mine": "true"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        items = response.json().get("items") or []
+        if not items:
+            return None
+        title = items[0].get("snippet", {}).get("title")
+        return str(title) if title else None
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("YouTube 채널명 조회 실패(무시): %s", type(exc).__name__)
+        return None
 
 
 def _exchange_long_lived_instagram_token(
