@@ -29,6 +29,40 @@ def test_internal_request_sends_shared_key(monkeypatch: pytest.MonkeyPatch) -> N
     assert captured["headers"] == {"X-Internal-API-Key": "shared-secret"}
 
 
+def test_get_trade_area_insight_calls_correct_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-08-29까지 `/api/v1/stores/trade-area-insight`(추측값, 404)를 불렀다.
+
+    AI 서버의 실제 OpenAPI 스펙을 조회해 `/api/v1/trade-area-insights`(복수,
+    stores 접두어 없음)로 확인·교체했다 — 회귀 방지용 테스트.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+        captured.update(method=method, url=url, **kwargs)
+        return httpx.Response(
+            200,
+            json={
+                "district_name": "압구정로데오·도산공원",
+                "summary": "...",
+                "age_distribution": {"20s": 35},
+                "gender_distribution": {"male": 45, "female": 55},
+            },
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(settings, "AI_SERVER_URL", "http://ai.internal")
+    monkeypatch.setattr(settings, "AI_SERVER_API_KEY", "shared-secret")
+    monkeypatch.setattr(httpx, "request", fake_request)
+
+    insight = ai_client.get_trade_area_insight(
+        Store(id=10, user_id=1, name="행복분식 강남점", category="분식")
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://ai.internal/api/v1/trade-area-insights"
+    assert insight.district_name == "압구정로데오·도산공원"
+
+
 def test_internal_auth_failure_becomes_configuration_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

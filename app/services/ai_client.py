@@ -1119,9 +1119,12 @@ def get_trade_area_insight(store: Store) -> TradeAreaInsight:
 
     data = _request_json(
         "POST",
-        # TODO(AI팀 확정 후 교체): 정확한 경로는 아직 AI팀이 안 정해줬다.
-        # 요청/응답 형식만 `docs/AI_연동_요청_2026-08-27_상권분석.md`로 합의됨.
-        "/api/v1/stores/trade-area-insight",
+        # 2026-08-29까지 `/api/v1/stores/trade-area-insight`(추측값)를 불렀는데
+        # 계속 404였다 — AI 서버의 OpenAPI 스펙(`/openapi.json`)을 직접 조회해
+        # 실제 경로가 `/api/v1/trade-area-insights`(단수 stores 아님, 복수
+        # insights)임을 확인하고 교체했다. 요청/응답 형식은 그대로
+        # `docs/AI_연동_요청_2026-08-27_상권분석.md` 합의대로다.
+        "/api/v1/trade-area-insights",
         json_body={
             "store": {
                 "name": store.name,
