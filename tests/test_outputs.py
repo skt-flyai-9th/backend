@@ -382,6 +382,31 @@ def test_store_shorts_excludes_unfinished(
     assert body["total"] == 0
 
 
+def test_store_shorts_excludes_completed_without_video_url(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    db_session: Session,
+    store_id: int,
+    project_id: int,
+) -> None:
+    """`render_status`가 COMPLETED여도 `video_url`이 없으면 갤러리에 안 나온다.
+
+    AI 결과에 렌더 URL이 비어 오면 실제로 이 상태가 만들어진다
+    (`app/services/video_output.py::_latest_completed_ids` 참고, 2026-08-31).
+    """
+    _edited_project(client, auth_headers, project_id)
+    outputs = db_session.query(VideoOutput).filter_by(shorts_project_id=project_id).all()
+    for output in outputs:
+        output.render_status = RenderStatus.COMPLETED
+        # video_url은 일부러 안 채운다 — 재생 안 되는 "완성" 케이스를 재현한다.
+    db_session.commit()
+
+    body = client.get(f"/stores/{store_id}/shorts", headers=auth_headers).json()
+
+    assert body["items"] == []
+    assert body["total"] == 0
+
+
 def test_store_shorts_returns_one_per_project(
     client: TestClient,
     auth_headers: dict[str, str],
