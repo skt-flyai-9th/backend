@@ -257,7 +257,7 @@ def test_create_store_prefers_payload_kakao_place_id_over_url_parsing(
     """
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        "app.api.routers.stores.menu_crawl_service.enrich_menu_from_kakao",
+        "app.api.routers.stores.menu_crawl_service.enrich_menu",
         lambda store_id, place_id, session_factory: captured.update(
             store_id=store_id, place_id=place_id
         ),
@@ -296,7 +296,7 @@ def test_create_store_falls_back_to_url_when_kakao_place_id_missing(
     """kakao_place_id를 안 보내면 기존처럼 external_channel_url에서 파싱한다(구버전 대응)."""
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        "app.api.routers.stores.menu_crawl_service.enrich_menu_from_kakao",
+        "app.api.routers.stores.menu_crawl_service.enrich_menu",
         lambda store_id, place_id, session_factory: captured.update(
             store_id=store_id, place_id=place_id
         ),

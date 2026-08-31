@@ -87,6 +87,10 @@ class UserProfileResponse(BaseSchema):
     phone: str | None
     marketing_agreed: bool
     created_at: UtcDatetime
+    # 등록해둔 가게가 있으면 그 ID, 없으면 null(온보딩 필요). 앱이 재로그인·
+    # 재설치 후에도 이 값으로 바로 GET /stores/{storeId}를 불러 기존 가게로
+    # 들어갈 수 있다(2026-08-31 추가, User 모델엔 없는 값이라 라우터에서 채운다).
+    store_id: int | None = None
 
 
 class UserProfileUpdateRequest(BaseSchema):
