@@ -238,6 +238,13 @@ def _latest_completed_ids(store: Store) -> Select[tuple[int]]:
 
     `id`가 클수록 나중에 만들어진 행이라(14.3 수정 요청마다 새 행) `MAX(id)`가
     최신본이다. `created_at`은 같은 초에 여러 행이 생기면 순서가 흔들린다.
+
+    **`video_url`도 같이 확인한다**(2026-08-31, FE 리포트로 발견). `render_status`가
+    `COMPLETED`여도 `video_url`이 `None`일 수 있다 — AI 결과에 렌더 URL이 비어
+    오면 `_persist_rendered_video`가 예외 없이 `(None, None)`을 돌려주고,
+    `video_edit.sync_output`은 그래도 상태를 `COMPLETED`로 그대로 커밋한다
+    (`app/services/video_edit.py`). 이 필터가 없으면 재생 안 되는 영상이
+    "완성"으로 그리드에 섞여 나온다.
     """
     return (
         select(func.max(VideoOutput.id))
@@ -245,6 +252,7 @@ def _latest_completed_ids(store: Store) -> Select[tuple[int]]:
         .where(
             ShortsProject.store_id == store.id,
             VideoOutput.render_status == RenderStatus.COMPLETED,
+            VideoOutput.video_url.is_not(None),
         )
         .group_by(VideoOutput.shorts_project_id)
     )
