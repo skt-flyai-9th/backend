@@ -14,6 +14,7 @@ from app.schemas.common import MessageResponse
 from app.schemas.push_token import PushTokenRegisterRequest
 from app.services import auth as auth_service
 from app.services import push_token as push_token_service
+from app.services import store as store_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -34,9 +35,16 @@ def withdraw(
 
 
 @router.get("/me", response_model=UserProfileResponse)
-def get_profile(user: CurrentUser) -> UserProfileResponse:
-    """내 회원정보를 돌려준다 (API명세서 1.5)."""
-    return UserProfileResponse.model_validate(user)
+def get_profile(user: CurrentUser, db: DbSession) -> UserProfileResponse:
+    """내 회원정보를 돌려준다 (API명세서 1.5).
+
+    `store_id`를 같이 내려준다 — 재로그인·재설치 후 앱이 기존 가게로 바로
+    들어갈 유일한 진입점이다(`GET /stores` 목록 조회가 없어서, 이게 없으면
+    앱은 이 사용자에게 가게가 있는지조차 알 방법이 없다).
+    """
+    store_id = store_service.get_store_id_for_user(db, user)
+    profile = UserProfileResponse.model_validate(user)
+    return profile.model_copy(update={"store_id": store_id})
 
 
 @router.patch("/me", response_model=UserProfileUpdateResponse, response_model_exclude_unset=True)

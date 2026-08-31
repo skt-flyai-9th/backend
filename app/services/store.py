@@ -73,6 +73,17 @@ def update_store(db: Session, store: Store, payload: StoreUpdateRequest) -> Stor
     return store
 
 
+def get_store_id_for_user(db: Session, owner: User) -> int | None:
+    """이 사용자의 가게 ID를 찾는다(없으면 `None`).
+
+    앱이 "가게 1개" 전제로 짜여 있어 `GET /stores` 같은 목록 조회가 없다 —
+    재로그인·재설치 후에도 기존 가게로 바로 들어가려면 이게 유일한 진입점이라
+    1.5(`GET /users/me`) 응답에 실어 보낸다(2026-08-31 추가). 여러 개면(원래
+    전제에 안 맞는 상태) 가장 먼저 만든 것을 기준으로 삼는다.
+    """
+    return db.scalar(select(Store.id).where(Store.user_id == owner.id).order_by(Store.id).limit(1))
+
+
 def get_owned_store(db: Session, owner: User, store_id: int) -> Store:
     """본인 소유 가게를 가져온다.
 
