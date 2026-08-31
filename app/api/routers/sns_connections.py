@@ -1,5 +1,6 @@
 """SNS 연동 API (API명세서 16.1 시작 / 해제 / 목록 조회)."""
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Query
@@ -18,6 +19,8 @@ from app.services import sns as sns_service
 from app.services import sns_oauth
 
 router = APIRouter(prefix="/sns-connections", tags=["sns-connections"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=ConnectionListResponse)
@@ -73,6 +76,7 @@ def callback(
     실려 오지 않는다. 대신 `state`에 담긴 서명으로 누구의 연동인지 확인한다.
     """
     if error or not code or not state:
+        logger.warning("SNS 연동 콜백 실패(파라미터 부족): error=%s", error)
         return _page("연동에 실패했습니다.", "앱으로 돌아가 다시 시도해주세요.", ok=False)
 
     try:
@@ -81,6 +85,9 @@ def callback(
         tokens = sns_oauth.exchange_code(config, code)
     except Exception:
         # 어떤 이유든 사장님에게는 같은 안내를 보여준다. 원인은 서버 로그에 남는다.
+        # (2026-08-31 이전에는 실제로 로그를 남기는 코드가 없어 이 주석과 달리
+        # 원인이 그대로 사라졌다 — Q2-7 유튜브 연동 미스터리의 원인.)
+        logger.exception("SNS 연동 콜백 실패")
         return _page("연동에 실패했습니다.", "앱으로 돌아가 다시 시도해주세요.", ok=False)
 
     sns_service.save_connection(db, parsed.user_id, parsed.platform, tokens)
