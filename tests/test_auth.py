@@ -274,7 +274,33 @@ def test_get_profile_returns_spec_fields(client: TestClient) -> None:
         "phone",
         "marketing_agreed",
         "created_at",
+        "store_id",
     }
+
+
+def test_get_profile_store_id_is_null_before_registration(client: TestClient) -> None:
+    """가게를 등록하지 않은 사용자는 `store_id`가 `null`이다 — 온보딩 필요 신호."""
+    tokens = _login_tokens(client)
+
+    response = client.get("/users/me", headers=_auth_header(tokens["access_token"]))
+
+    assert response.json()["store_id"] is None
+
+
+def test_get_profile_store_id_reflects_registered_store(client: TestClient) -> None:
+    """가게 등록 후엔 그 가게 ID가 온다 — 재로그인·재설치 후 앱의 유일한 진입점."""
+    tokens = _login_tokens(client)
+    headers = _auth_header(tokens["access_token"])
+    create_response = client.post(
+        "/stores",
+        json={"name": "행복분식", "category": "분식", "address": "서울 강남구 테헤란로 1"},
+        headers=headers,
+    )
+    assert create_response.status_code == 201, create_response.text
+
+    response = client.get("/users/me", headers=headers)
+
+    assert response.json()["store_id"] == create_response.json()["id"]
 
 
 def test_patch_profile_returns_only_changed_fields(client: TestClient) -> None:
