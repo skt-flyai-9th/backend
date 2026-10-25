@@ -1,6 +1,6 @@
 # Reals — Backend
 
-FLY AI 열정 2조. 소상공인이 AI의 도움을 받아 숏폼(릴스/쇼츠) 영상을 **기획 → 촬영 → 편집 → 게시**까지 혼자 끝낼 수 있게 해주는 서비스의 백엔드 레포지토리입니다.
+소상공인이 AI의 도움을 받아 숏폼(릴스/쇼츠) 영상을 **기획 → 촬영 → 편집 → 게시**까지 혼자 끝낼 수 있게 해주는 서비스의 백엔드 레포지토리입니다.
 
 - **API 서버**: https://sarils.p-e.kr ([Swagger](https://sarils.p-e.kr/docs) · [ReDoc](https://sarils.p-e.kr/redoc))
 
